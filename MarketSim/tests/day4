@@ -1,0 +1,110 @@
+import unittest
+import pandas as pd
+import numpy as np
+import shutil
+import os
+import sys
+
+# Ensure we can import from the parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from engine.matching_engine import MatchingEngine
+from engine.order import Order
+from analytics.tape import Tape
+from analytics.snapshots import SnapshotRecorder
+from analytics.metrics import MarketMetrics
+
+class TestDay4Analytics(unittest.TestCase):
+    
+    def setUp(self):
+        """Setup fresh objects for each test"""
+        self.tape = Tape()
+        self.recorder = SnapshotRecorder()
+        self.engine = MatchingEngine()
+
+    # --- LEVEL 1: UNIT TESTS (Logic Check) ---
+
+    def test_tape_recording(self):
+        """Verify Tape correctly captures and formats trades."""
+        print("\n[Test] Verifying Tape Logic...")
+        
+        # Log 2 fake trades
+        self.tape.log_trade(100.0, 105.0, 10, "B1", "S1", "buy")
+        self.tape.log_trade(101.0, 106.0, 20, "B2", "S2", "sell")
+        
+        df = self.tape.to_dataframe()
+        
+        # Check Dimensions
+        self.assertEqual(len(df), 2)
+        
+        # Check Formatting
+        self.assertTrue('datetime' in df.columns)
+        self.assertEqual(df.iloc[0]['price'], 105.0)
+        self.assertEqual(df.iloc[1]['qty'], 20)
+        print("✅ Tape recording is correct.")
+
+    def test_vwap_calculation(self):
+        """Verify VWAP math manually."""
+        print("\n[Test] Verifying VWAP Math...")
+        
+        # Create a dummy tape dataframe
+        data = {
+            'price': [100, 200, 300],
+            'qty':   [10,  10,  10], # Equal weight
+            'datetime': pd.to_datetime([1, 2, 3], unit='s')
+        }
+        tape_df = pd.DataFrame(data).set_index('datetime')
+        
+        metrics = MarketMetrics(tape_df)
+        vwap = metrics.calculate_vwap()
+        
+        # Expected: (1000 + 2000 + 3000) / 30 = 6000 / 30 = 200.0
+        self.assertEqual(vwap, 200.0)
+        print(f"✅ VWAP calculated correctly: {vwap}")
+
+    def test_volatility_calculation(self):
+        """Verify Volatility pipeline (Log Returns -> Std Dev)."""
+        print("\n[Test] Verifying Volatility Logic...")
+        
+        # Create dummy L1 data: Price jumps from 100 -> 101 -> 100 -> 101
+        # This represents simple oscillating volatility
+        timestamps = pd.date_range(start='2024-01-01', periods=100, freq='1s')
+        prices = [100 if i % 2 == 0 else 101 for i in range(100)]
+        
+        df = pd.DataFrame({'mid_price': prices}, index=timestamps)
+        
+        metrics = MarketMetrics(df)
+        vol = metrics.calculate_session_volatility()
+        
+        self.assertTrue(vol > 0)
+        print(f"✅ Volatility is non-zero: {vol:.6f}")
+
+    # --- LEVEL 2: INTEGRATION TEST (System Check) ---
+
+    def test_snapshot_integration(self):
+        """Verify Snapshots correctly pull state from Engine."""
+        print("\n[Test] Verifying Snapshot Integration...")
+        
+        # 1. Add some orders to the engine
+        self.engine.add_order(Order("A1", "buy", 10, 99.0, timestamp=1))
+        self.engine.add_order(Order("A2", "sell", 10, 101.0, timestamp=1))
+        
+        # 2. Record Snapshot
+        self.recorder.record_snapshot(self.engine, timestamp=2)
+        
+        # 3. Check L1 Data
+        l1_df = self.recorder.get_l1_dataframe()
+        self.assertEqual(l1_df.iloc[0]['best_bid'], 99.0)
+        self.assertEqual(l1_df.iloc[0]['best_ask'], 101.0)
+        self.assertEqual(l1_df.iloc[0]['mid_price'], 100.0)
+        
+        # 4. Check L2 Data (Depth)
+        l2_df = self.recorder.get_l2_dataframe()
+        bids = l2_df.iloc[0]['bids'] # Should be list of tuples
+        self.assertEqual(bids[0][0], 99.0) # Price
+        self.assertEqual(bids[0][1], 10)   # Qty
+        
+        print("✅ Snapshot correctly captured Engine state.")
+
+if __name__ == '__main__':
+    unittest.main()

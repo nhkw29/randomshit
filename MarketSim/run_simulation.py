@@ -24,7 +24,8 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
         agents.append(MarketMaker(f"MM_{i}"))
     
     def background_step():
-        current_fv = FairvalueProcess.step(1.0)
+        fv_process = FairvalueProcess()
+        current_fv = fv_process.step(1.0)
         agent = random.choice(agents)
         snap = order_book.get_snapshot()
         snap['fair_value'] = current_fv

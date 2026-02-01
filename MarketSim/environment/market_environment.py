@@ -24,6 +24,8 @@ class GymTradingEnvironment(gym.Env):
         self.insider_inventory = 0
         self.cash_balance = 100000
         self.tape_reader_index=0
+        self.latency_mu=0.005
+        self.latency_sigma=0.001
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)

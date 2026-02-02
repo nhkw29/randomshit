@@ -29,8 +29,18 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     def background_step():
         lambda_rate = 10
         arrival_delay = np.random.exponential(1/lambda_rate)
-        
         current_fv = fv_process.step(arrival_delay)
+
+        for trade in order_book.tape:
+            for agent in agents:
+                if trade.buyer_id == agent.agent_id:
+                    agent.inventory += trade.qty
+                    agent.balance -= trade.qty * trade.price
+                elif trade.seller_id == agent.agent_id:
+                    agent.inventory -= trade.qty
+                    agent.balance += trade.qty * trade.price
+        
+        order_book.tape.clear()
         
         agent = random.choice(agents)
         snap = order_book.get_snapshot()

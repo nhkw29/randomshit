@@ -21,14 +21,14 @@ class MarketMaker(BaseAgent):
         self.skew_factor = skew_factor
 
     def act(self, snapshot):
-        fair_value = snapshot.l1_snapshots[-1]['fair_value'] if snapshot.l1_snapshots else 100.0
+        mid_price = snapshot.l1_snapshots[-1]['mid_price'] if snapshot.l1_snapshots else 100.0
         spread=snapshot.l1_snapshots[-1]['spread'] if snapshot.l1_snapshots else 1.0
         q=self.inventory
         if q <= -self.inventory_limit or q >= self.inventory_limit:
             return None
-        inventory_skew = self.skew_factor * q 
-        bid_price = round(fair_value - (spread / 2) + (inventory_skew * spread), 2)
-        ask_price = round(fair_value + (spread / 2) + (inventory_skew * spread), 2)
+        reservation_price=mid_price-self.inventory*self.skew_factor
+        bid_price=round(reservation_price-spread/2,2)
+        ask_price=round(reservation_price+spread/2,2)
         qty = random.randint(1, 10)
         return [
             {

@@ -15,30 +15,39 @@ class BaseAgent(ABC):
         pass
     
 class MarketMaker(BaseAgent):
-    def __init__(self, agent_id):
+    def __init__(self, agent_id, inventory_limit=100):
         super().__init__(agent_id)
+        self.inventory_limit = inventory_limit
+
     def act(self, snapshot):
         fair_value = snapshot.l1_snapshots[-1]['fair_value'] if snapshot.l1_snapshots else 100.0
-        spread = 1.0
-        bid_price = round(fair_value - spread / 2, 2)
-        ask_price = round(fair_value + spread / 2, 2)
-        bid_order = Order(
-            agent_id=self.agent_id,
-            side='buy',
-            price=bid_price,
-            qty=10,
-            order_type='limit',
-            timestamp=None
-        )
-        ask_order = Order(
-            agent_id=self.agent_id,
-            side='sell',
-            price=ask_price,
-            qty=10,
-            order_type='limit',
-            timestamp=None
-        )
-        return [bid_order, ask_order]
+        spread=snapshot.l1_snapshots[-1]['spread'] if snapshot.l1_snapshots else 1.0
+        q=self.inventory
+        if q <= -self.inventory_limit or q >= self.inventory_limit:
+            return None
+        if q < 0:
+            inventory_skew=0.5
+        elif q > 0:
+            inventory_skew=-0.5
+        bid_price = round(fair_value - (spread / 2) + (inventory_skew * spread), 2)
+        ask_price = round(fair_value + (spread / 2) + (inventory_skew * spread), 2)
+        qty = random.randint(1, 10)
+        return [
+            {
+                'type': 'PLACE_LIMIT',
+                'side': 'buy',
+                'price': bid_price,
+                'qty': qty,
+                'agent_id': self.agent_id
+            },
+            {
+                'type': 'PLACE_LIMIT',
+                'side': 'sell',
+                'price': ask_price,
+                'qty': qty,
+                'agent_id': self.agent_id
+            }
+        ]
 
 class NoiseTrader(BaseAgent):
     def __init__(self, agent_id,sigma=2.0):
@@ -59,8 +68,9 @@ class NoiseTrader(BaseAgent):
             'qty': trade_size,
             'agent_id': self.agent_id
         }
+
 class MomentumTrader(BaseAgent):
-    def __init__(self, agent_id, window_size=50, sigma=1.0):
+    def __init__(self, agent_id, window_size=50):
         super().__init__(agent_id)
         self.window_size = window_size
         self.price_history = deque(maxlen=window_size)

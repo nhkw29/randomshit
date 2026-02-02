@@ -2,7 +2,7 @@ import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from engine.matching_engine import MatchingEngine
 from engine.event_loop import EventLoop
-from agents.agents import RandomTrader, MarketMaker
+from agents.agents import MarketMaker, NoiseTrader, MomentumTrader
 from analytics.tape import Tape
 from analytics.snapshots import SnapshotRecorder
 from analytics.plots import MarketPlots
@@ -14,17 +14,19 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     loop = EventLoop()
     tape = Tape()
     recorder = SnapshotRecorder()
+    fv_process = FairvalueProcess(initial_value=100.0, mu=0.0, sigma=0.5)
     
     np.random.seed(42)
     
     agents = []
     for i in range(noise_count):
-        agents.append(RandomTrader(f"NT_{i}"))
+        agents.append(NoiseTrader(f"NT_{i}"))
     for i in range(mm_count):
         agents.append(MarketMaker(f"MM_{i}"))
+    for i in range(mom_count): # FIX: Add momentum agents to the pool
+        agents.append(MomentumTrader(f"MOM_{i}"))
     
     def background_step():
-        fv_process = FairvalueProcess()
         current_fv = fv_process.step(1.0)
         agent = random.choice(agents)
         snap = order_book.get_snapshot()

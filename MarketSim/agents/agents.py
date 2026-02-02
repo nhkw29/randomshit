@@ -74,8 +74,8 @@ class MomentumTrader(BaseAgent):
         self.price_history = deque(maxlen=window_size)
     
     def act(self, snapshot):
-        fair_value = snapshot.l1_snapshots[-1]['fair_value'] if snapshot.l1_snapshots else 100.0
-        current_mid = snapshot.l1_snapshots[-1]['mid_price'] if snapshot.l1_snapshots else fair_value
+
+        current_mid = snapshot.l1_snapshots[-1]['mid_price'] if snapshot.l1_snapshots else 100.0
         self.price_history.append(current_mid)
         
         if len(self.price_history) < self.window_size:

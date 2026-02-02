@@ -23,35 +23,39 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
         agents.append(NoiseTrader(f"NT_{i}"))
     for i in range(mm_count):
         agents.append(MarketMaker(f"MM_{i}"))
-    for i in range(mom_count): # FIX: Add momentum agents to the pool
+    for i in range(mom_count):
         agents.append(MomentumTrader(f"MOM_{i}"))
     
     def background_step():
-        current_fv = fv_process.step(1.0)
+        lambda_rate = 10
+        arrival_delay = np.random.exponential(1/lambda_rate)
+        
+        current_fv = fv_process.step(arrival_delay)
+        
         agent = random.choice(agents)
         snap = order_book.get_snapshot()
         snap['fair_value'] = current_fv
-        intent = agent.act(snap)
-
-        if intent and intent['type']=='PLACE_LIMIT':
-            order = Order(
-                agent_id=intent['agent_id'],
-                side=intent['side'],
-                price=intent['price'],
-                qty=intent['qty'],
-                order_type='limit',
-                timestamp=None
-            )
-            orders = order
-
-        if not isinstance(orders, list):
-            orders = [orders]
-        for order in orders:
-            order.timestamp = loop.current_time
-            order_book.add_order(order)
         
-        lambda_rate = 10
-        arrival_delay = np.random.exponential(1/lambda_rate)
+        action = agent.act(snap)
+        
+        if action:
+            intents = [action] if isinstance(action, dict) else action
+            
+            for item in intents:
+                if isinstance(item, dict):
+                    order_type = item['type'].split('_')[1].lower()
+                    new_order = Order(
+                        agent_id=item['agent_id'],
+                        side=item['side'],
+                        qty=item['qty'],
+                        price=item.get('price'),
+                        order_type=order_type,
+                        timestamp=loop.current_time
+                    )
+                    order_book.add_order(new_order)
+                else:
+                    item.timestamp = loop.current_time
+                    order_book.add_order(item)
         loop.schedule(arrival_delay, background_step)
 
     loop.schedule(0, background_step)

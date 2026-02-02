@@ -15,9 +15,10 @@ class BaseAgent(ABC):
         pass
     
 class MarketMaker(BaseAgent):
-    def __init__(self, agent_id, inventory_limit=100):
+    def __init__ (self, agent_id, inventory_limit=100, skew_factor=0.01):
         super().__init__(agent_id)
         self.inventory_limit = inventory_limit
+        self.skew_factor = skew_factor
 
     def act(self, snapshot):
         fair_value = snapshot.l1_snapshots[-1]['fair_value'] if snapshot.l1_snapshots else 100.0
@@ -25,10 +26,7 @@ class MarketMaker(BaseAgent):
         q=self.inventory
         if q <= -self.inventory_limit or q >= self.inventory_limit:
             return None
-        if q < 0:
-            inventory_skew=0.5
-        elif q > 0:
-            inventory_skew=-0.5
+        inventory_skew = self.skew_factor * q 
         bid_price = round(fair_value - (spread / 2) + (inventory_skew * spread), 2)
         ask_price = round(fair_value + (spread / 2) + (inventory_skew * spread), 2)
         qty = random.randint(1, 10)

@@ -29,6 +29,7 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     def background_step():
         lambda_rate = 10
         arrival_delay = np.random.exponential(1/lambda_rate)
+        
         current_fv = fv_process.step(arrival_delay)
         
         for trade in order_book.tape:
@@ -40,16 +41,21 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
                     agent.inventory -= trade.qty
                     agent.balance += trade.qty * trade.price
         
-        order_book.tape.clear() 
+        order_book.tape.clear()
 
         agent = random.choice(agents)
         snap = order_book.get_snapshot()
-        snap['fair_value'] = current_fv
         
+        if isinstance(agent, NoiseTrader):
+            snap['fair_value'] = current_fv
+        else:
+            snap.pop('fair_value', None)
+
         action = agent.act(snap)
         
         if action:
             intents = [action] if isinstance(action, dict) else action
+            
             for item in intents:
                 if isinstance(item, dict):
                     order_type = item['type'].split('_')[1].lower()
@@ -67,8 +73,6 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
                     order_book.add_order(item)
 
         loop.schedule(arrival_delay, background_step)
-
-    loop.schedule(0, background_step)
     
     def record_tick():
         recorder.record_snapshot(order_book, loop.current_time)

@@ -21,23 +21,27 @@ class MarketMaker(BaseAgent):
         self.skew_factor = skew_factor
 
     def act(self, snapshot):
-        # Fallback defaults if snapshot is empty
         mid_price = snapshot.get('mid_price', 100.0)
-        spread = snapshot.get('spread', 1.0)
+        # Fallback to 0.10 spread instead of 1.0 to encourage tightness
+        last_spread = snapshot.get('spread', 0.10)
         
         q = self.inventory
-        
-        if q <= -self.inventory_limit or q >= self.inventory_limit:
+        if abs(q) >= self.inventory_limit:
             return None
 
-        # Reservation Price Model
         reservation_price = mid_price - (q * self.skew_factor)
         
-        # --- FIX: CLAMP PRICES TO 0.01 ---
-        bid_price = max(0.01, round(reservation_price - (spread / 2), 2))
-        ask_price = max(0.01, round(reservation_price + (spread / 2), 2))
+        # --- FIX: DYNAMIC SPREAD ---
+        # Add slight randomness to spread to prevent "flatline" charts
+        # Varies between 90% and 110% of the last known spread
+        target_spread = max(0.02, last_spread * random.uniform(0.9, 1.1))
         
-        # Ensure ask > bid
+        half_spread = target_spread / 2
+        
+        bid_price = max(0.01, round(reservation_price - half_spread, 2))
+        ask_price = max(0.01, round(reservation_price + half_spread, 2))
+        
+        # Ensure minimal viable spread
         if ask_price <= bid_price:
             ask_price = bid_price + 0.05
         
@@ -71,10 +75,10 @@ class NoiseTrader(BaseAgent):
         side = random.choice(['buy', 'sell'])
         trade_size = random.randint(1, 20)
         
+        # Noise traders create volatility
         price_variation = np.random.normal(0, self.sigma)
         price = fair_value + price_variation if side == 'buy' else fair_value - price_variation
         
-        # --- FIX: CLAMP PRICES ---
         price = max(0.01, round(price, 2))
         
         return {

@@ -7,6 +7,7 @@ class MatchingEngine:
         self.asks = [] 
         self.tape = [] 
         self.orders = {}
+        self.last_mid = 100.0  # MEMORY: Stores last price to prevent flatlines
 
     def add_order(self, order):
         order.status = 'open'
@@ -21,7 +22,7 @@ class MatchingEngine:
 
         if order.qty > 0:
             if order.order_type == 'market':
-                order.status='cancelled' if order.status=='open' else 'filled'
+                order.status = 'cancelled' if order.status == 'open' else 'filled'
                 return 
             
             if order.side == 'buy':
@@ -78,12 +79,12 @@ class MatchingEngine:
     def cancel_order(self, order_id):
         if order_id in self.orders:
             order = self.orders[order_id]
-            if order.status == 'open'or order.status == 'partial':
+            if order.status in ['open', 'partial']:
                 order.status = 'cancelled'
                 return True
         return False
         
-    def clean_book(self,book):
+    def clean_book(self, book):
         while book and book[0][2].status in ['filled', 'cancelled']:
             heapq.heappop(book)
     
@@ -91,36 +92,40 @@ class MatchingEngine:
         self.clean_book(self.bids)
         self.clean_book(self.asks)
 
-        best_bid = -self.bids[0][0] if self.bids else 0.0
-        best_ask = self.asks[0][0] if self.asks else float('inf')
+        # Retrieve top-of-book prices safely
+        best_bid = -self.bids[0][0] if self.bids else None
+        best_ask = self.asks[0][0] if self.asks else None
         
-        if best_bid > 0 and best_ask < float('inf'):
+        # LOGIC FIX: Handle empty books to prevent "flatline"
+        if best_bid is not None and best_ask is not None:
             mid = (best_bid + best_ask) / 2
-        elif best_bid > 0:
+            spread = best_ask - best_bid
+        elif best_bid is not None:
             mid = best_bid
+            spread = 1.0  # Default spread fallback
+        elif best_ask is not None:
+            mid = best_ask
+            spread = 1.0
         else:
-            mid = 100.0
+            mid = self.last_mid  # Use memory instead of resetting to 100
+            spread = 0.0
             
-        spread = best_ask - best_bid if best_ask < float('inf') else 0
-        
+        self.last_mid = mid  # Update memory
+
         return {
-            'best_bid': best_bid, 
-            'best_ask': best_ask, 
+            'best_bid': best_bid if best_bid is not None else 0.0, 
+            'best_ask': best_ask if best_ask is not None else float('inf'), 
             'mid_price': mid, 
             'spread': spread
         }
+
     def run_sanity_check(self):
         assert isinstance(self.tape, list), "Tape corrupted"
-
         if self.bids and self.asks:
-            best_bid_price = -self.bids[0][0] # Remember bids are stored negative
+            best_bid_price = -self.bids[0][0]
             best_ask_price = self.asks[0][0]
-            
             assert best_bid_price <= best_ask_price, \
                 f"CRITICAL: Market Crossed! Bid ${best_bid_price} >= Ask ${best_ask_price}"
-
         if self.bids:
-            assert self.bids[0][0] <= 0, "Bid Heap Logic Error: Found positive value in bid heap (should be neg)"
-            
+            assert self.bids[0][0] <= 0, "Bid Heap Logic Error: Found positive value in bid heap"
         return True
-    

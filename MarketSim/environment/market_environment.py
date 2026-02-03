@@ -5,132 +5,183 @@ import random
 
 from engine.matching_engine import MatchingEngine
 from engine.order import Order
-from agents.agents import KyleNoiseTrader, InventoryMarketMaker
 from engine.event_loop import EventLoop
+# FIXED: Importing the actual agents from your agents.py
+from agents.agents import MarketMaker, NoiseTrader
 
 class GymTradingEnvironment(gym.Env):
+    metadata = {'render_modes': ['human']}
+
     def __init__(self):
         super(GymTradingEnvironment, self).__init__()
-
+        
         self.loop = EventLoop()
         
-        self.action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
+        # Action Space: 0=Hold, 1=Buy, 2=Sell
+        self.action_space = spaces.Discrete(3)
+        
+        # Observation Space: [Rel_Bid, Rel_Ask, Rel_Spread, Norm_Inventory, Norm_Cash]
+        self.observation_space = spaces.Box(
+            low=-10.0, 
+            high=10.0, 
+            shape=(5,), 
+            dtype=np.float32
+        )
 
         self.order_book = None
         self.agents = []
-        self.max_steps = 1000
+        self.max_steps = 1000  
         
         self.insider_inventory = 0
-        self.cash_balance = 100000
-        self.tape_reader_index=0
-        self.latency_mu=0.005
-        self.latency_sigma=0.001
+        self.cash_balance = 100000.0
+        self.tape_reader_index = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+
         self.loop = EventLoop()
         self.order_book = MatchingEngine()
         self.insider_inventory = 0
-        self.cash_balance = 100000
+        self.cash_balance = 100000.0
+        self.tape_reader_index = 0
         self.agents = []
 
+        # FIXED: Using the classes defined in your agents.py
         for i in range(5): 
-            self.agents.append(InventoryMarketMaker(f"MM_{i}"))
+            # MarketMaker manages its own inventory limit
+            self.agents.append(MarketMaker(f"MM_{i}", inventory_limit=1000))
         for i in range(10): 
-            self.agents.append(KyleNoiseTrader(f"NT_{i}", sigma_n=3.0))
+            # NoiseTrader uses 'sigma' not 'sigma_n'
+            self.agents.append(NoiseTrader(f"NT_{i}", sigma=3.0))
 
         random.shuffle(self.agents)
 
-        self.loop.schedule(0.1,self._background_agent_step)
+        # Warmup
+        self.loop.schedule(0.1, self._background_agent_step)
         self.loop.run_until(20.0)
 
-        self.tape_reader_index=len(self.order_book.tape)
+        self.tape_reader_index = len(self.order_book.tape)
+        
         return self._get_obs(), {}
 
     def step(self, action):
-        current_time = self.loop.current_time
+        fixed_qty = 10 
         
-        side_val, agg_val, qty_val = action
-        
-        side = 'buy' if side_val > 0 else 'sell'
-        qty = int((qty_val + 1) / 2 * 100)
-        
-        if qty > 0:
+        snap = self.order_book.get_snapshot()
+        mid_price = snap['mid_price']
+        if mid_price == 0: mid_price = 100.0 
 
-            def place_insider_order():
-                
-                snap = self.order_book.get_snapshot()
-                mid = snap['mid_price']
+        aggressive_offset = 0.05 
+
+        if action == 1: # Buy
+            price = round(mid_price + aggressive_offset, 2)
+            self._place_order('buy', price, fixed_qty)
             
-                offset = agg_val * 2.0
-                if side == 'buy': price = mid + offset
-                else: price = mid - offset
+        elif action == 2: # Sell
+            price = round(mid_price - aggressive_offset, 2)
+            self._place_order('sell', price, fixed_qty)
             
-                insider_order = Order(
-                    agent_id="Insider",
-                    side=side,
-                    price=round(price, 2),
-                    qty=qty,
-                    order_type='limit',
-                    timestamp=self.loop.current_time
-                )
-                self.order_book.add_order(insider_order)
-            
-            self.loop.schedule(0.05, place_insider_order)
+        # Run simulation forward
+        self.loop.run_until(self.loop.current_time + 1.0)
         
-        target_time = current_time + 1.0
-        self.loop.run_until(target_time)
+        # Process Fills
+        self._process_fills()
 
-        current_tape=self.order_book.tape
-        current_tape_length=len(current_tape)
+        # Calculate Reward (PnL based)
+        current_portfolio_value = self.cash_balance + (self.insider_inventory * mid_price)
+        reward = (current_portfolio_value - 100000.0) / 1000.0
 
-        for i in range(self.tape_reader_index,current_tape_length):
-            trade=current_tape[i]
-            if trade.buyer_id == "Insider":
-                self.insider_inventory += trade.qty
-                self.cash_balance -= trade.qty * trade.price
-            elif trade.seller_id == "Insider":
-                self.insider_inventory -= trade.qty
-                self.cash_balance += trade.qty * trade.price
-        
-        self.tape_reader_index=current_tape_length
-        
-        current_mid = self.order_book.get_snapshot()['mid_price']
-        portfolio_value = self.cash_balance + (self.insider_inventory * current_mid)
-
-        reward = (portfolio_value - 100000) / 100
-
-        terminated = self.cash_balance<=0
-        truncated = self.loop.current_time >= (self.max_steps+20.0)
-
-        try:
-            self.order_book.run_sanity_check()
-        except AssertionError as e:
-            print(f"SIMULATION CRASHED: {e}")
-            return self._get_obs(), -1000.0, True, False, {"error": str(e)}
+        terminated = self.cash_balance <= 0 
+        truncated = self.loop.current_time >= (self.max_steps + 20.0) 
         
         return self._get_obs(), reward, terminated, truncated, {}
 
     def _get_obs(self):
         snap = self.order_book.get_snapshot()
+        mid = snap['mid_price']
+        if mid == 0: mid = 100.0
+
+        rel_bid = (snap['best_bid'] - mid) / mid if snap['best_bid'] else 0
+        rel_ask = (snap['best_ask'] - mid) / mid if snap['best_ask'] else 0
+        rel_spread = snap['spread'] / mid
+        
+        norm_inventory = self.insider_inventory / 100.0
+        norm_cash = (self.cash_balance - 100000.0) / 10000.0
+
         return np.array([
-            snap['best_bid'],
-            snap['best_ask'],
-            snap['mid_price'],
-            snap['spread'],
-            self.insider_inventory,
-            self.cash_balance
+            rel_bid,
+            rel_ask,
+            rel_spread,
+            norm_inventory,
+            norm_cash
         ], dtype=np.float32)
 
-    def _background_agent_step(self):
-        agent= random.choice(self.agents)
-        snap = self.order_book.get_snapshot()
-        orders = agent.act(snap)
-        if not isinstance(orders, list):
-            orders = [orders]
-        for order in orders:
-            order.timestamp = self.loop.current_time
+    def _place_order(self, side, price, qty):
+        def execute():
+            order = Order(
+                agent_id="Insider",
+                side=side,
+                price=price,
+                qty=qty,
+                order_type='limit',
+                timestamp=self.loop.current_time,
+                order_id=f"RL_{int(self.loop.current_time*1000)}_{side}" 
+            )
             self.order_book.add_order(order)
-        next_delay = random.uniform(0.1, 0.5)
+            
+        self.loop.schedule(0.05, execute)
+
+    def _process_fills(self):
+        current_tape = self.order_book.tape
+        for i in range(self.tape_reader_index, len(current_tape)):
+            trade = current_tape[i]
+            
+            if trade.buyer_id == "Insider":
+                self.insider_inventory += trade.qty
+                self.cash_balance -= trade.qty * trade.price
+            
+            elif trade.seller_id == "Insider":
+                self.insider_inventory -= trade.qty
+                self.cash_balance += trade.qty * trade.price
+                
+        self.tape_reader_index = len(current_tape)
+
+    def _background_agent_step(self):
+        agent = random.choice(self.agents)
+        snap = self.order_book.get_snapshot()
+        
+        actions = agent.act(snap)
+        
+        # Handle different return types (list of dicts vs single dict vs None)
+        if isinstance(actions, dict):
+            actions = [actions]
+        elif actions is None:
+            actions = []
+
+        for action in actions:
+            if action['type'] == 'CANCEL':
+                self.order_book.cancel_order(action['order_id'])
+            else:
+                # Robustly handle type strings like "PLACE_LIMIT" or "limit"
+                order_type_str = action.get('type', 'limit')
+                if '_' in order_type_str:
+                     order_type = order_type_str.split('_')[-1].lower()
+                else:
+                     order_type = order_type_str.lower()
+                
+                o = Order(
+                    agent_id=action['agent_id'],
+                    side=action['side'],
+                    qty=action['qty'],
+                    price=action.get('price'),
+                    order_type=order_type,
+                    timestamp=self.loop.current_time,
+                    order_id=action.get('order_id', f"{action['agent_id']}_{random.randint(0, 1e9)}")
+                )
+                self.order_book.add_order(o)
+            
+        next_delay = random.uniform(0.01, 0.1) 
         self.loop.schedule(next_delay, self._background_agent_step)

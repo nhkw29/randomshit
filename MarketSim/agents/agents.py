@@ -19,50 +19,67 @@ class MarketMaker(BaseAgent):
         super().__init__(agent_id)
         self.inventory_limit = inventory_limit
         self.skew_factor = skew_factor
+        self.active_orders = [] # REQUIRED: Track active order IDs
+        self.order_counter = 0
 
     def act(self, snapshot):
         mid_price = snapshot.get('mid_price', 100.0)
-        # Fallback to 0.10 spread instead of 1.0 to encourage tightness
         last_spread = snapshot.get('spread', 0.10)
         
+        actions = []
+
+        # --- FIX: CANCEL OLD ORDERS ---
+        # This is the critical missing piece! 
+        # Without this, the book fills up and the spread freezes.
+        if self.active_orders:
+            for oid in self.active_orders:
+                actions.append({'type': 'CANCEL', 'order_id': oid})
+            self.active_orders = []
+
         q = self.inventory
         if abs(q) >= self.inventory_limit:
-            return None
+            return actions # Return just cancels if inventory full
 
         reservation_price = mid_price - (q * self.skew_factor)
         
-        # --- FIX: DYNAMIC SPREAD ---
-        # Add slight randomness to spread to prevent "flatline" charts
-        # Varies between 90% and 110% of the last known spread
+        # Dynamic spread logic with jitter
         target_spread = max(0.02, last_spread * random.uniform(0.9, 1.1))
-        
         half_spread = target_spread / 2
         
         bid_price = max(0.01, round(reservation_price - half_spread, 2))
         ask_price = max(0.01, round(reservation_price + half_spread, 2))
         
-        # Ensure minimal viable spread
         if ask_price <= bid_price:
             ask_price = bid_price + 0.05
         
         qty = random.randint(1, 10)
         
-        return [
-            {
-                'type': 'PLACE_LIMIT',
-                'side': 'buy',
-                'price': bid_price,
-                'qty': qty,
-                'agent_id': self.agent_id
-            },
-            {
-                'type': 'PLACE_LIMIT',
-                'side': 'sell',
-                'price': ask_price,
-                'qty': qty,
-                'agent_id': self.agent_id
-            }
-        ]
+        # Generate Unique IDs
+        self.order_counter += 1
+        bid_id = f"{self.agent_id}_{self.order_counter}_B"
+        ask_id = f"{self.agent_id}_{self.order_counter}_A"
+        
+        # Place New Orders with explicit IDs
+        actions.append({
+            'type': 'PLACE_LIMIT',
+            'side': 'buy',
+            'price': bid_price,
+            'qty': qty,
+            'agent_id': self.agent_id,
+            'order_id': bid_id
+        })
+        actions.append({
+            'type': 'PLACE_LIMIT',
+            'side': 'sell',
+            'price': ask_price,
+            'qty': qty,
+            'agent_id': self.agent_id,
+            'order_id': ask_id
+        })
+        
+        self.active_orders = [bid_id, ask_id]
+        
+        return actions
 
 class NoiseTrader(BaseAgent):
     def __init__(self, agent_id, sigma=0.5):
@@ -75,10 +92,8 @@ class NoiseTrader(BaseAgent):
         side = random.choice(['buy', 'sell'])
         trade_size = random.randint(1, 20)
         
-        # Noise traders create volatility
         price_variation = np.random.normal(0, self.sigma)
         price = fair_value + price_variation if side == 'buy' else fair_value - price_variation
-        
         price = max(0.01, round(price, 2))
         
         return {

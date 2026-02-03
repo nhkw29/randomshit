@@ -14,7 +14,9 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     loop = EventLoop()
     tape = Tape()
     recorder = SnapshotRecorder()
-    fv_process = FairvalueProcess(initial_value=100.0, mu=0.0, sigma=0.5)
+    
+    # --- FIX 1: SIGMA = 0.05 (Prevents Market Crash) ---
+    fv_process = FairvalueProcess(initial_value=100.0, mu=0.0, sigma=0.05)
     
     np.random.seed(42)
     
@@ -22,16 +24,17 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     for i in range(noise_count):
         agents.append(NoiseTrader(f"NT_{i}"))
     for i in range(mm_count):
-        agents.append(MarketMaker(f"MM_{i}"))
+        # Increased inventory limit so MMs stay active
+        agents.append(MarketMaker(f"MM_{i}", inventory_limit=1000))
     for i in range(mom_count):
         agents.append(MomentumTrader(f"MOM_{i}"))
     
     def background_step():
         lambda_rate = 10
         arrival_delay = np.random.exponential(1/lambda_rate)
-    
         current_fv = fv_process.step(arrival_delay)
-    
+        
+        # State Sync
         for trade in order_book.tape:
             for agent in agents:
                 if trade.buyer_id == agent.agent_id:
@@ -40,22 +43,20 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
                 elif trade.seller_id == agent.agent_id:
                     agent.inventory -= trade.qty
                     agent.balance += trade.qty * trade.price
-    
         order_book.tape.clear()
 
         agent = random.choice(agents)
         snap = order_book.get_snapshot()
-    
+        
         if isinstance(agent, NoiseTrader):
             snap['fair_value'] = current_fv
         else:
             snap.pop('fair_value', None)
-    
+        
         action = agent.act(snap)
-    
+        
         if action:
             intents = [action] if isinstance(action, dict) else action
-        
             for item in intents:
                 if isinstance(item, dict):
                     order_type = item['type'].split('_')[1].lower()
@@ -73,13 +74,34 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
                     order_book.add_order(item)
 
         loop.schedule(arrival_delay, background_step)
+
+    # --- FIX 2: WARM-UP LOOP (Prevents Start-Up Spike) ---
+    print(f"  > Warming up {scenario_name}...")
+    for _ in range(200): 
+        mm_agents = [a for a in agents if isinstance(a, MarketMaker)]
+        if not mm_agents: break
+        
+        agent = random.choice(mm_agents)
+        snap = order_book.get_snapshot()
+        # Seed the book if empty
+        if snap['mid_price'] == 100.0 and snap['spread'] == 0:
+            snap['mid_price'] = 100.0
+            snap['spread'] = 1.0
+
+        action = agent.act(snap)
+        if action:
+            for item in action:
+                o = Order(item['agent_id'], item['side'], item['qty'], item['price'])
+                order_book.add_order(o)
+
+    loop.schedule(0, background_step)
     
     def record_tick():
         recorder.record_snapshot(order_book, loop.current_time)
         loop.schedule(1.0, record_tick)
     
     loop.schedule(1.0, record_tick)
-    loop.run_until(1800.0)
+    loop.run_until(3600.0)
     
     plotter = MarketPlots(recorder, tape)
     plotter.generate_scenario_report(pdf, scenario_name)

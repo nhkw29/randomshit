@@ -15,22 +15,24 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     tape = Tape()
     recorder = SnapshotRecorder()
     
-    # --- FIX 1: SIGMA = 0.05 (Prevents Market Crash) ---
-    fv_process = FairvalueProcess(initial_value=100.0, mu=0.0, sigma=0.05)
+    # --- FIX 1: LOW VOLATILITY ---
+    # Keeps price realistic (e.g. 100 -> 102)
+    fv_process = FairvalueProcess(initial_value=100.0, mu=0.0, sigma=0.0005)
     
     np.random.seed(42)
+    random.seed(42)
     
     agents = []
     for i in range(noise_count):
         agents.append(NoiseTrader(f"NT_{i}"))
     for i in range(mm_count):
-        # Increased inventory limit so MMs stay active
+        # MMs now manage their own inventory and orders
         agents.append(MarketMaker(f"MM_{i}", inventory_limit=1000))
     for i in range(mom_count):
         agents.append(MomentumTrader(f"MOM_{i}"))
     
     def background_step():
-        lambda_rate = 10
+        lambda_rate = 15
         arrival_delay = np.random.exponential(1/lambda_rate)
         current_fv = fv_process.step(arrival_delay)
         
@@ -58,10 +60,24 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
         if action:
             intents = [action] if isinstance(action, dict) else action
             for item in intents:
+                # --- FIX 2: HANDLE CANCELLATIONS ---
+                if item.get('type') == 'CANCEL':
+                    order_book.cancel_order(item['order_id'])
+                    continue
+
                 if isinstance(item, dict):
-                    order_type = item['type'].split('_')[1].lower()
+                    # Robust order type parsing
+                    t_str = item.get('type', 'PLACE_LIMIT')
+                    order_type = t_str.split('_')[1].lower() if '_' in t_str else 'limit'
+
+                    # --- FIX 3: UNIQUE ORDER IDs ---
+                    # Use Agent's ID if provided, else generate random unique ID
+                    # This prevents order_id=0 overwriting in the engine
+                    oid = item.get('order_id', f"sys_{random.randint(0, 10**9)}")
+
                     new_order = Order(
                         agent_id=item['agent_id'],
+                        order_id=oid,  # Pass the ID explicitly
                         side=item['side'],
                         qty=item['qty'],
                         price=item.get('price'),
@@ -69,29 +85,27 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
                         timestamp=loop.current_time
                     )
                     order_book.add_order(new_order)
-                else:
-                    item.timestamp = loop.current_time
-                    order_book.add_order(item)
 
         loop.schedule(arrival_delay, background_step)
 
-    # --- FIX 2: WARM-UP LOOP (Prevents Start-Up Spike) ---
+    # Warmup
     print(f"  > Warming up {scenario_name}...")
-    for _ in range(200): 
+    for _ in range(100): 
         mm_agents = [a for a in agents if isinstance(a, MarketMaker)]
         if not mm_agents: break
-        
         agent = random.choice(mm_agents)
         snap = order_book.get_snapshot()
-        # Seed the book if empty
         if snap['mid_price'] == 100.0 and snap['spread'] == 0:
             snap['mid_price'] = 100.0
-            snap['spread'] = 1.0
-
+            snap['spread'] = 0.05
+        
+        # Warmup usually just adds orders, that's fine
         action = agent.act(snap)
         if action:
             for item in action:
-                o = Order(item['agent_id'], item['side'], item['qty'], item['price'])
+                if item.get('type') == 'CANCEL': continue
+                oid = item.get('order_id', f"wu_{random.randint(0, 10**9)}")
+                o = Order(item['agent_id'], item['side'], item['qty'], item['price'], order_id=oid)
                 order_book.add_order(o)
 
     loop.schedule(0, background_step)
@@ -107,7 +121,7 @@ def run_scenario(pdf, scenario_name, noise_count, mm_count, mom_count):
     plotter.generate_scenario_report(pdf, scenario_name)
 
 class FairvalueProcess:
-    def __init__(self, initial_value=100.0, mu=0.0, sigma=1.0):
+    def __init__(self, initial_value=100.0, mu=0.0, sigma=0.0005):
         self.current_value = initial_value
         self.mu = mu
         self.sigma = sigma
